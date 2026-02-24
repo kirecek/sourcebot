@@ -19,6 +19,12 @@ export const env = createEnv({
 
         // The number of lines to include above and below a match
         DEFAULT_CONTEXT_LINES: numberSchema.default(5),
+
+        // HTTP transport: maximum number of concurrent MCP sessions
+        MCP_MAX_SESSIONS: numberSchema.default(100),
+
+        // HTTP transport: milliseconds of inactivity before a session is auto-closed
+        MCP_SESSION_IDLE_TIMEOUT_MS: numberSchema.default(30 * 60 * 1000),
     },
     runtimeEnv: process.env,
     emptyStringAsUndefined: true,

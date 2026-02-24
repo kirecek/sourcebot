@@ -366,7 +366,34 @@ const runServer = async () => {
             });
         });
 
-        const transports: Record<string, { transport: StreamableHTTPServerTransport; server: McpServer }> = {};
+        const transports: Record<string, {
+            transport: StreamableHTTPServerTransport;
+            server: McpServer;
+            lastActivity: number;
+            idleTimer: ReturnType<typeof setTimeout>;
+        }> = {};
+
+        function closeSession(sessionId: string): void {
+            const entry = transports[sessionId];
+            if (!entry) return;
+            clearTimeout(entry.idleTimer);
+            entry.transport.close().catch((err) => {
+                console.error(`Error closing transport for session ${sessionId}:`, err);
+            });
+        }
+
+        function touchSession(sessionId: string): void {
+            const entry = transports[sessionId];
+            if (!entry) return;
+            entry.lastActivity = Date.now();
+            clearTimeout(entry.idleTimer);
+            const timer = setTimeout(() => {
+                console.log(`Session ${sessionId} idle for ${env.MCP_SESSION_IDLE_TIMEOUT_MS}ms; closing.`);
+                closeSession(sessionId);
+            }, env.MCP_SESSION_IDLE_TIMEOUT_MS);
+            timer.unref();
+            entry.idleTimer = timer;
+        }
 
         app.post('/mcp', async (req: Request, res: Response) => {
             const rawSessionId = req.headers['mcp-session-id'];
@@ -384,21 +411,39 @@ const runServer = async () => {
             }
             try {
                 if (sessionId && transports[sessionId]) {
+                    touchSession(sessionId);
                     const { transport } = transports[sessionId];
                     await transport.handleRequest(req, res, req.body);
                     return;
                 }
                 if (!sessionId && isInitializeRequest(req.body)) {
+                    if (Object.keys(transports).length >= env.MCP_MAX_SESSIONS) {
+                        res.status(503).json({
+                            jsonrpc: '2.0',
+                            error: {
+                                code: -32000,
+                                message: `Service Unavailable: maximum session limit of ${env.MCP_MAX_SESSIONS} reached`,
+                            },
+                            id: null,
+                        });
+                        return;
+                    }
                     const server = createServer();
                     const transport = new StreamableHTTPServerTransport({
                         sessionIdGenerator: () => randomUUID(),
                         onsessioninitialized: (id) => {
-                            transports[id] = { transport, server };
+                            const timer = setTimeout(() => {
+                                console.log(`Session ${id} idle for ${env.MCP_SESSION_IDLE_TIMEOUT_MS}ms; closing.`);
+                                closeSession(id);
+                            }, env.MCP_SESSION_IDLE_TIMEOUT_MS);
+                            timer.unref();
+                            transports[id] = { transport, server, lastActivity: Date.now(), idleTimer: timer };
                         },
                     });
                     transport.onclose = () => {
                         const sid = transport.sessionId;
                         if (sid && transports[sid]) {
+                            clearTimeout(transports[sid].idleTimer);
                             server.close();
                             delete transports[sid];
                         }
@@ -478,6 +523,7 @@ const runServer = async () => {
                 return;
             }
             try {
+                touchSession(sessionId);
                 const { transport } = transports[sessionId];
                 await transport.handleRequest(req, res);
             } catch (error) {
@@ -558,7 +604,8 @@ const runServer = async () => {
             for (const sessionId in transports) {
                 try {
                     console.log(`Closing transport for session ${sessionId}`);
-                    const { transport, server } = transports[sessionId]!;
+                    const { transport, server, idleTimer } = transports[sessionId]!;
+                    clearTimeout(idleTimer);
                     await transport.close();
                     server.close();
                     delete transports[sessionId];
