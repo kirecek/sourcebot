@@ -553,7 +553,7 @@ const runServer = async () => {
             console.log(`MCP Streamable HTTP server listening on http://${host}:${port}`);
         });
 
-        process.on('SIGINT', async () => {
+        const shutdown = async () => {
             console.log('Shutting down server...');
             for (const sessionId in transports) {
                 try {
@@ -568,7 +568,10 @@ const runServer = async () => {
             }
             console.log('Server shutdown complete');
             process.exit(0);
-        });
+        };
+
+        process.on('SIGINT', shutdown);
+        process.on('SIGTERM', shutdown);
     } else {
         const server = createServer();
         const transport = new StdioServerTransport();
